@@ -89,9 +89,6 @@ Function Invoke-MgConsoleGuiGraphSearch {
         )]
         [string]$ObjectType,
 
-        # For Device Object type only, return Discovered Apps
-        [switch]$DiscoveredApps = $false,
-
         [Parameter(Mandatory = $false, ValueFromPipelineByPropertyName = $true)]
         [string]$Search , # Search string is optional
         
