@@ -46,7 +46,13 @@
     - ServicePrincipal: Application.Read.All
     - SettingsCatalog: DeviceManagementConfiguration.Read.All
     - ConfigProfile: DeviceManagementConfiguration.Read.All
-
+    - AppProtection: DeviceManagementApps.Read.All
+    - CompliancePolicy: DeviceManagementConfiguration.Read.All
+    - DiscoveredApps: DeviceManagementManagedDevices.Read.All
+    - Note: The script checks for the required permissions and prompts the user if they are missing.
+.VERSION
+    0.1.0
+    Initial version of the script.
 .LINK
     https://learn.microsoft.com/graph/api/overview?view=graph-rest-beta
     https://github.com/PowerShell/ConsoleGuiTools
@@ -58,7 +64,7 @@
 Function Invoke-MgConsoleGuiGraphSearch {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
         # Object types and their purposes:
         # "User" - Represents Microsoft 365 users.
         # "Group" - Represents Microsoft 365 groups.
@@ -67,195 +73,286 @@ Function Invoke-MgConsoleGuiGraphSearch {
         # "ServicePrincipal" - Represents service principals in Azure AD.
         # "SettingsCatalog" - Represents settings catalog policies in Microsoft Endpoint Manager.
         # "ConfigProfile" - Represents configuration profiles in Microsoft Endpoint Manager.
-        [ValidateSet("User", "Group", "Device", "MobileApp", "ServicePrincipal", "SettingsCatalog", "ConfigProfile")]
+        # "AppProtection" - Represents app protection policies in Microsoft Endpoint Manager.
+        # "CompliancePolicy" - Represents compliance policies in Microsoft Endpoint Manager.
+        [ValidateSet(
+            "User",
+            "Group", 
+            "Device", 
+            "MobileApp", 
+            "ServicePrincipal", 
+            "SettingsCatalog", 
+            "ConfigProfile", 
+            "AppProtection", 
+            "CompliancePolicy",
+            "DiscoveredApps"
+        )]
         [string]$ObjectType,
 
-        [Parameter(Mandatory = $false)]
-        [string]$Search  # Search string is optional
+        # For Device Object type only, return Discovered Apps
+        [switch]$DiscoveredApps = $false,
+
+        [Parameter(Mandatory = $false, ValueFromPipelineByPropertyName = $true)]
+        [string]$Search , # Search string is optional
+        
+        [Parameter(Mandatory = $false, ValueFromPipelineByPropertyName = $true)]
+        [ValidateSet("JSON", "Grid", "List", "Table", "System.Object")]
+        [string]$OutputType = "System.Object" # Default output type
     )
 
-    Function IsNullOrWhitespace {
-        param([string]$InputString)
-        return [string]::IsNullOrEmpty($InputString) -or $InputString.Trim() -eq ""
+    # Begin block to initialize resources
+    begin {
+
+        # The helper function remains local
+        Function IsNullOrWhitespace {
+            param([string]$InputString)
+            return [string]::IsNullOrEmpty($InputString) -or $InputString.Trim() -eq ""
+        }
+        function Get-GraphItemsForType {
+            param(
+                [Parameter(Mandatory = $true)]
+                [string]$ObjectType,
+                [string]$Search
+            )
+            
+            # Determine whether a search term is provided.
+            $noSearch = [string]::IsNullOrWhiteSpace($Search)
+            $splat = @{ All = $true }
+            if ($ObjectType -match "User|Group|Device|ServicePrincipal" -and (-not $noSearch)) {
+                $splat += @{ Search = "displayName:$Search"; ConsistencyLevel = "eventual" }
+            }
+            $items = $null
+            switch ($ObjectType) {
+                "User" {
+                    return Get-MgBetaUser @splat
+                }
+                "Group" {
+                    return Get-MgBetaGroup @splat
+                }
+                "Device" {
+                    return Get-MgBetaDevice @splat
+                }
+                "ServicePrincipal" {
+                    return Get-MgBetaServicePrincipal @splat
+                }
+                "SettingsCatalog" {
+                    $items = Get-MgBetaDeviceManagementConfigurationPolicy -All
+                    if (-not $noSearch) {
+                        return $items | Where-Object { $_.Name -like "*$Search*" }
+                    }
+                    return $items
+                }
+                "MobileApp" {
+                    $items = Get-MgBetaDeviceAppManagementMobileApp @splat
+                }
+                "ConfigProfile" {
+                    $items = Get-MgBetaDeviceManagementDeviceConfiguration @splat
+                }
+                "AppProtection" {
+                    $items = Get-MgBetaDeviceAppManagementManagedAppPolicy @splat
+                }
+                "CompliancePolicy" {
+                    $items = Get-MgBetaDeviceManagementDeviceCompliancePolicy @splat
+                }
+                "DiscoveredApps" {
+                    $items = Get-MgBetaDeviceManagementDetectedApp @splat
+                }
+                default {
+                    throw "Unsupported ObjectType: $ObjectType"
+                }
+            }
+            if (-not $noSearch) {
+                return $items | Where-Object { $_.DisplayName -like "*$Search*" }
+            }
+            return $items
+        }
     }
 
-    $noSearch = IsNullOrWhitespace $Search
+    # Process block: Runs once for each piped input
+    process {
+        $noSearch = IsNullOrWhitespace $Search
 
-    # Check if the required Microsoft Graph module is loaded
-    $requiredCommand = switch ($ObjectType) {
-        "User" { "Get-MgBetaUser" }
-        "Group" { "Get-MgBetaGroup" }
-        "Device" { "Get-MgBetaDevice" }
-        "MobileApp" { "Get-MgBetaDeviceAppManagementMobileApp" }
-        "ServicePrincipal" { "Get-MgBetaServicePrincipal" }
-        "SettingsCatalog" { "Get-MgBetaDeviceManagementConfigurationPolicy" }
-        "ConfigProfile" { "Get-MgBetaDeviceManagementDeviceConfiguration" }
-    }
+        # Check required Microsoft Graph and Console GUI commands.
+        $requiredCommand = switch ($ObjectType) {
+            "User" { "Get-MgBetaUser" }
+            "Group" { "Get-MgBetaGroup" }
+            "Device" { "Get-MgBetaDevice" }
+            "MobileApp" { "Get-MgBetaDeviceAppManagementMobileApp" }
+            "ServicePrincipal" { "Get-MgBetaServicePrincipal" }
+            "SettingsCatalog" { "Get-MgBetaDeviceManagementConfigurationPolicy" }
+            "ConfigProfile" { "Get-MgBetaDeviceManagementDeviceConfiguration" }
+            "AppProtection" { "Get-MgBetaDeviceAppManagementManagedAppPolicy" }
+            "CompliancePolicy" { "Get-MgBetaDeviceManagementDeviceCompliancePolicy" }
+            "DiscoveredApps" { "Get-MgBetaDeviceManagementManagedDeviceDetectedApp" }
+        }
 
-    if (-not (Get-Command $requiredCommand -ErrorAction SilentlyContinue)) {
-        Write-Error "The required command '$requiredCommand' for object type '$ObjectType' is not available. Please ensure the Microsoft Graph module is installed and imported."
-        return
-    }
-    if (-not (Get-Command Out-ConsoleGridView -ErrorAction SilentlyContinue)) {
-        Write-Error "The required command 'Out-ConsoleGridView' is not available. Please ensure the Microsoft.PowerShell.ConsoleGuiTools module is installed and imported."
-        return
-    }
-    # Check if the user has the required permissions to access the specified object type
-    $permissions = switch ($ObjectType) {
-        "User" { "User.Read.All" }
-        "Group" { "Group.Read.All" }
-        "Device" { "Device.Read.All" }
-        "MobileApp" { "DeviceManagementApps.Read.All" }
-        "ServicePrincipal" { "Application.Read.All" }
-        "SettingsCatalog" { "DeviceManagementConfiguration.Read.All" }
-        "ConfigProfile" { "DeviceManagementConfiguration.Read.All" }
-    }
+        if (-not (Get-Command $requiredCommand -ErrorAction SilentlyContinue)) {
+            Write-Error "The required command '$requiredCommand' for object type '$ObjectType' is not available. Please ensure the Microsoft Graph module is installed and imported."
+            return
+        }
+        if (-not (Get-Command Out-ConsoleGridView -ErrorAction SilentlyContinue)) {
+            Write-Error "The required command 'Out-ConsoleGridView' is not available. Please ensure the Microsoft.PowerShell.ConsoleGuiTools module is installed and imported."
+            return
+        }
+
+        # Check if the user has the required permissions
+        $permissions = switch ($ObjectType) {
+            "User" {
+                "User.Read.All"
+            }
+            "Group" {
+                "Group.Read.All"
+            }
+            "Device" {
+                "Device.Read.All"
+            }
+            "MobileApp" { 
+                "DeviceManagementApps.Read.All" 
+            }
+            "ServicePrincipal" {
+                "Application.Read.All"
+            }
+            "SettingsCatalog" { 
+                "DeviceManagementConfiguration.Read.All" 
+            }
+            "ConfigProfile" { 
+                "DeviceManagementConfiguration.Read.All" 
+            }
+            "AppProtection" { 
+                "DeviceManagementApps.Read.All"
+            }
+            "CompliancePolicy" {
+                "DeviceManagementConfiguration.Read.All"
+            }
+            "DiscoveredApps" {
+                "DeviceManagementManagedDevices.Read.All"
+            }
+
+        }
     
-    $context = Get-MgContext
-    if (-not $context) {
-        Write-Error "Not connected to Microsoft Graph. Please connect using Connect-MgGraph."
-        return
-    }
-    
-    if (-not $context.Scopes.Contains($permissions)) {
-        Write-Error "You do not have the required permission: $permissions. Current scopes: $($context.Scopes -join ', ')"
-        return
-    }
+        $context = Get-MgContext
+        if (-not $context) {
+            Write-Error "Not connected to Microsoft Graph. Please connect using Connect-MgGraph."
+            return
+        }
+        if (-not $context.Scopes.Contains($permissions)) {
+            Write-Error "You do not have the required permission: $permissions. Current scopes: $($context.Scopes -join ', ')"
+            return
+        }
+        # Retrieve data from Microsoft Graph based on object type and search input.
+        $items = Get-GraphItemsForType -ObjectType $ObjectType -Search $Search
+        # Define common properties for the grid view.
+        $commonProperties = switch ($ObjectType) {
+            "User" { "DisplayName", "Id", "Mail", "accountEnabled", "UserPrincipalName", "UserType" }
+            "Group" { "DisplayName", "Id", "MailEnabled", "MailNickname", "SecurityEnabled" }
+            "Device" { "DisplayName", "Id", "OperatingSystem", "OperatingSystemVersion", "Model", "Manufacturer" }
+            "MobileApp" { "DisplayName", "Id", "Publisher", "AppType", "IsFeatured", "IsAssigned" }
+            "ServicePrincipal" { "DisplayName", "Id", "AppId" }
+            "SettingsCatalog" { "Name", "Id", "Description" }
+            "ConfigProfile" { "DisplayName", "Id", "Description", "Version" }
+            "AppProtection" { "DisplayName", "Id", "Description", "CreatedDateTime", "LastModifiedDateTime" }
+            "CompliancePolicy" { "DisplayName", "Id", "Description", "CreatedDateTime", "LastModifiedDateTime" }
+            "DiscoveredApps" { "DisplayName", "Platform", "Version", "DeviceCount", "Id" }
+            default { "*" }
+        }
 
-    # Retrieve data from Microsoft Graph based on object type and search input
-    switch ($ObjectType) {
-        "User" {
-            if ( $noSearch ) {
-                # No search term provided – retrieve all users
-                $items = Get-MgBetaUser -All
-            } else {
-                # Use server-side search to find matching users (reduces API payload)
-                $items = Get-MgBetaUser -Search "displayName:$Search" -All -ConsistencyLevel eventual
+        $gridItems = $items | Select-Object -Property $commonProperties
+        $title = "Select a $ObjectType" + $(if (-not $noSearch) { " matching '$Search'" } else { "" })
+        $selections = $gridItems | Out-ConsoleGridView -Title $title -OutputMode "Multiple"
+
+        function Get-FullObject {
+            param(
+                [string]$Type,
+                [string]$Id
+            )
+            switch ($Type) {
+                "User" { return Get-MgBetaUser -UserId $Id }
+                "Group" { return Get-MgBetaGroup -GroupId $Id }
+                "Device" { return Get-MgBetaDevice -DeviceId $Id }
+                "MobileApp" { return Get-MgBetaDeviceAppManagementMobileApp -MobileAppId $Id }
+                "ServicePrincipal" { return Get-MgBetaServicePrincipal -ServicePrincipalId $Id }
+                "SettingsCatalog" { return Get-MgBetaDeviceManagementConfigurationPolicy -DeviceManagementConfigurationPolicyId $Id }
+                "ConfigProfile" { return Get-MgBetaDeviceManagementDeviceConfiguration -DeviceConfigurationId $Id }
+                "AppProtection" { return Get-MgBetaDeviceAppManagementManagedAppPolicy -ManagedAppPolicyId $Id }
+                "CompliancePolicy" { return Get-MgBetaDeviceManagementDeviceCompliancePolicy -DeviceCompliancePolicyId $Id }
+                "DiscoveredApps" { return Get-MgBetaDeviceManagementDetectedApp -DetectedAppId $Id }
+                default { return $null }
             }
         }
-        "Group" {
-            if ( $noSearch ) {
-                $items = Get-MgBetaGroup -All
+
+        if ($selections) {
+            # Initialize $Output as an array
+            $Output = @()
+            
+            if ($selections -is [System.Collections.IEnumerable] -and $selections.Count -gt 1) {
+                foreach ($selection in $selections) {
+                    if (-not $selection.PSObject.Properties["Id"]) {
+                        Write-Warning "Selected $ObjectType object does not contain an 'Id' property."
+                        continue
+                    }
+                    $result = Get-FullObject -Type $ObjectType -Id $selection.Id
+                    # Add the current result to the $Output array
+                    $Output += $result
+                }
             } else {
-                $items = Get-MgBetaGroup -Search "displayName:$Search" -All -ConsistencyLevel eventual
-
-            }
-        }
-        "Device" {
-            if ( $noSearch ) {
-                $items = Get-MgBetaDevice -All -Select "DisplayName,Id,OperatingSystem,OperatingSystemVersion,Model,Manufacturer" | Select-Object -Property DisplayName, Id, OperatingSystem, OperatingSystemVersion, Model, Manufacturer
-            } else {
-                $items = Get-MgBetaDevice -Search "displayName:$search" -ConsistencyLevel eventual | Select-Object -Property DisplayName, Id, OperatingSystem, OperatingSystemVersion, Model, Manufacturer
-            }
-        }
-        "MobileApp" {
-            if ( $noSearch ) {
-                $items = Get-MgBetaDeviceAppManagementMobileApp -All
-
-            } else {
-                # Applications don't support -Search; use filter or client-side filtering
-                $items = Get-MgBetaDeviceAppManagementMobileApp -Search "displayName:$search" -ConsistencyLevel eventual
-                # Alternatively, use an OData filter for startsWith if available:
-                # $items = Get-MgBetaDeviceAppManagementMobileApp -Filter "startsWith(displayName,'$Search')" -All
-            }
-        }
-        "ServicePrincipal" {
-            if ( $noSearch ) {
-                $items = Get-MgBetaServicePrincipal -All 
-            } else {
-                # Service principals also don't support direct -Search in Graph API
-                $items = Get-MgBetaServicePrincipal -Search "displayName:$search" -ConsistencyLevel eventual
-            }
-        }
-        "SettingsCatalog" {
-            if ( $noSearch ) {
-                $items = Get-MgBetaDeviceManagementConfigurationPolicy -All
-
-            } else {
-                # Use an OData filter to search within settings catalog items if supported
-                $items = Get-MgBetaDeviceManagementConfigurationPolicy -All | ? Name -like "*$search*"
-            }
-        }
-        "ConfigProfile" {
-            if ( $noSearch ) {
-                $items = Get-MgBetaDeviceManagementDeviceConfiguration -All
-            } else {
-                # Use an OData filter to search within configuration profiles
-                $items = Get-MgBetaDeviceManagementDeviceConfiguration -All | ?  DisplayName -like "*$search*"
-            }
-        }    
-    }
-    # Define common properties to show in the grid view for each object type
-    $commonProperties = switch ($ObjectType) {
-        "User" { "DisplayName", "Id", "Mail", "accountEnabled", "UserPrincipalName", "UserType" }
-        "Group" { "DisplayName", "Id", "MailEnabled", "MailNickname", "SecurityEnabled" }
-        "Device" { "DisplayName", "Id", "OperatingSystem", "OperatingSystemVersion", "Model", "Manufacturer" }
-        "MobileApp" { "DisplayName", "Id", "Publisher", "AppType", "IsFeatured", "IsAssigned" }
-        "ServicePrincipal" { "DisplayName", "Id", "AppId" }
-        "SettingsCatalog" { "Name", "Id", "Description" }
-        "ConfigProfile" { "displayName", "Id", "Description", "Version" }
-        default { "*" }
-    }
-
-    # Limit the items shown in the grid view to common properties
-    $gridItems = $items | Select-Object -Property $commonProperties
-
-    $title = "Select a $ObjectType" + $(if (-not $noSearch) { " matching '$Search'" } else { "" })
-    $selections = $gridItems | Out-ConsoleGridView -Title $title -OutputMode "Multiple"
-
-    # Helper function to retrieve the full object details
-    function Get-FullObject {
-        param(
-            [string]$Type,
-            [string]$Id
-        )
-        switch ($Type) {
-            "User" { return Get-MgBetaUser -UserId $Id }
-            "Group" { return Get-MgBetaGroup -GroupId $Id }
-            "Device" { return Get-MgBetaDevice -DeviceId $Id }
-            "MobileApp" { return Get-MgBetaDeviceAppManagementMobileApp -MobileAppId $Id }
-            "ServicePrincipal" { return Get-MgBetaServicePrincipal -ServicePrincipalId $Id }
-            "SettingsCatalog" { return Get-MgBetaDeviceManagementConfigurationPolicy -DeviceManagementConfigurationPolicyId $Id }
-            "ConfigProfile" { return Get-MgBetaDeviceManagementDeviceConfiguration -DeviceConfigurationId $Id }
-            default { return $null }
-        }
-    }
-
-    if ($selections) {
-        if ($selections -is [System.Collections.IEnumerable] -and $selections.Count -gt 1) {
-            foreach ($selection in $selections) {
+                $selection = $selections
                 if (-not $selection.PSObject.Properties["Id"]) {
                     Write-Warning "Selected $ObjectType object does not contain an 'Id' property."
-                    continue
+                    return
                 }
-                $result = Get-FullObject -Type $ObjectType -Id $selection.Id
-                $result | Format-List -Property * -Force
+                $Output = Get-FullObject -Type $ObjectType -Id $selection.Id
+            }
+        
+            switch ($OutputType) {
+                "JSON" {
+                    $Output | ConvertTo-Json -Depth 10
+                }
+                "Grid" {
+                    $Output | Out-ConsoleGridView -Title "Selected $ObjectType Details"
+                }
+                "Table" {
+                    $Output | Format-Table -Property * -Force
+                }
+                default {
+                    $Output | Format-List -Property * -Force
+                }
             }
         } else {
-            $selection = $selections
-            if (-not $selection.PSObject.Properties["Id"]) {
-                Write-Warning "Selected $ObjectType object does not contain an 'Id' property."
-                return
-            }
-            $selection = Get-FullObject -Type $ObjectType -Id $selection.Id
-            $selection | Format-List -Property * -Force
+            Write-Warning "No items selected."
         }
     }
-} 
+
+    # End block (if any cleanup is required)
+    end {
+        # Optionally, perform any final actions.
+    }
+}
 
 # Prevent execution if the script is run directly
 if ($MyInvocation.InvocationName -eq $MyInvocation.MyCommand.Name) {
-    Write-Host "This script is intended to be used as a function. Please import it into your PowerShell session."
-    Write-Host "Usage: .\Invoke-MgConsoleGuiGraphSearch.ps1"
+    Write-Host "`nThis script is intended to be used as a function. Please import it into your PowerShell session."
+    Write-Host "`nUsage:"
+    Write-Host "`n. .\Invoke-MgConsoleGuiGraphSearch.ps1`n" -ForegroundColor Yellow
     Write-Host "Then call the function with appropriate parameters."
-    Write-Host "Example: Invoke-MgConsoleGuiGraphSearch -ObjectType User -Search 'Jorge'"
+    Write-Host "`nExample:"
+    Write-Host "`nInvoke-MgConsoleGuiGraphSearch -ObjectType User -Search 'Jorge'`n" -ForegroundColor Yellow
     Write-Host "Exiting script."
 }
 Exit 0
 
 # Sample commands:
 # Connect to Microsoft Graph with required permissions
-Connect-MgGraph -Scopes "User.Read.All", "Group.Read.All", "Device.Read.All", "DeviceManagementApps.Read.All", "Application.Read.All", "DeviceManagementConfiguration.Read.All"
+$mgParams = @{
+    Scopes = @(
+        "User.Read.All"
+        "Group.Read.All"
+        "Device.Read.All"
+        "DeviceManagementApps.Read.All"
+        "Application.Read.All"
+        "DeviceManagementConfiguration.Read.All"
+    )
+}
+Connect-MgGraph @mgParams
 
 # Search for users
 Invoke-MgConsoleGuiGraphSearch -ObjectType User -Search "Jorge"
@@ -277,3 +374,12 @@ Invoke-MgConsoleGuiGraphSearch -ObjectType SettingsCatalog
 
 # Search configuration profiles
 Invoke-MgConsoleGuiGraphSearch -ObjectType ConfigProfile -Search "MacOS"
+
+# Retrieve App Protection policies with "iOS" in their name and output the result in JSON format.
+Invoke-MgConsoleGuiGraphSearch -ObjectType AppProtection -Search "iOS" -OutputType JSON
+
+# Retrieve Compliance policies
+Invoke-MgConsoleGuiGraphSearch -ObjectType CompliancePolicy
+
+# Retrieve discovered apps
+Invoke-MgConsoleGuiGraphSearch -ObjectType DiscoveredApps -Search "Zune"
